@@ -307,6 +307,35 @@ function Verify-AdbDevice([string]$Serial) {
  $state=(@($output) -join "`n").Trim()
  return ($exit -eq 0 -and $state -eq "device")
 }
+function Get-PreferredAdbDevice {
+    $ready = @(Get-ReadyAdbDevices)
+
+    if ($ready.Count -eq 0) {
+        return $null
+    }
+
+    # Prefer Android Wireless Debugging mDNS transport
+    $tls = @($ready | Where-Object {
+        $_ -match '_adb-tls-connect\._tcp$'
+    })
+
+    if ($tls.Count -gt 0) {
+        return $tls[0]
+    }
+
+    # Then prefer regular Wi-Fi IP connections
+    $wifi = @($ready | Where-Object {
+        $_ -match ':\d+$'
+    })
+
+    if ($wifi.Count -gt 0) {
+        return $wifi[0]
+    }
+
+    # Otherwise use USB
+    return $ready[0]
+}
+
 function Friendly($pkg) {
 
  if($script:KnownApps.ContainsKey($pkg)) {
@@ -468,12 +497,16 @@ function Refresh-Apps {
    return
   }
   # Prefer the direct IP:port wireless transport; both ADB transports may refer to one phone.
-  $ipDevice=@($ready | Where-Object {$_ -match ':\d+$'})
-  if($ipDevice.Count -gt 0){
-   $script:AdbSerial=$ipDevice[0];$script:ConnectionMode="Wi-Fi"
-  } else {
-   $script:AdbSerial=$ready[0];$script:ConnectionMode="USB"
-  }
+ 
+$script:AdbSerial = Get-PreferredAdbDevice
+
+if ($script:AdbSerial -match '_adb-tls-connect\._tcp$' -or
+    $script:AdbSerial -match ':\d+$') {
+    $script:ConnectionMode = "Wi-Fi"
+} else {
+    $script:ConnectionMode = "USB"
+}
+
   if(!(Verify-AdbDevice $script:AdbSerial)){
    Set-DeviceDisplay ""
    Set-Status "ADB sees the phone, but its selected transport did not pass get-state." $C.Red
@@ -486,7 +519,7 @@ function Refresh-Apps {
   # Retry using fresh device enumeration; don't trust a stale remembered serial.
   $script:AdbSerial=""
   $ready=Get-ReadyAdbDevices
-  $candidate=@($ready | Where-Object {$_ -match ':\d+$'}) | Select-Object -First 1
+$candidate = Get-PreferredAdbDevice
   if(!$candidate){$candidate=$ready | Select-Object -First 1}
   if(!$candidate -or !(Verify-AdbDevice $candidate)){
    Set-DeviceDisplay ""
@@ -495,6 +528,12 @@ function Refresh-Apps {
    return
   }
   $script:AdbSerial=$candidate
+if ($candidate -match '_adb-tls-connect\._tcp$' -or
+    $candidate -match ':\d+$') {
+    $script:ConnectionMode = "Wi-Fi"
+} else {
+    $script:ConnectionMode = "USB"
+}
   $state=Adb @("get-state")
  }
  if(($state -as [string]).Trim() -ne "device"){
